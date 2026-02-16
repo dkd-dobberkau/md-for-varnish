@@ -4,3 +4,4 @@ __pycache__/
 .pytest_cache/
 .claude/
 go-sidecar/go-sidecar
+typo3-content-signals/
