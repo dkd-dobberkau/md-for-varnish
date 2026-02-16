@@ -25,7 +25,7 @@ services:
     expose:
       - "8000"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      test: ["CMD", "/markdown-sidecar", "-healthcheck"]
       interval: 10s
       timeout: 3s
       retries: 3
