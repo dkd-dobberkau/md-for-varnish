@@ -11,7 +11,7 @@ Markdown for Agents – a Varnish sidecar that converts HTML pages to Markdown f
 Three-service Docker stack:
 
 1. **Varnish** (`default.vcl`) – Content router. Inspects `Accept` header: `text/markdown` → sidecar, everything else → TYPO3 origin. Caches both variants separately via `hash_data("markdown")`.
-2. **Markdown Sidecar** (`main.py`) – FastAPI service. Fetches HTML from origin, strips chrome (nav, footer, scripts, cookie banners), isolates content (`<main>`, `<article>`, `#content`), converts to Markdown with YAML front matter, counts tokens via tiktoken.
+2. **Markdown Sidecar** (`go-sidecar/`) – Go HTTP service (~9 MB distroless image). Fetches HTML from origin, strips chrome (nav, footer, scripts, cookie banners), isolates content (`<main>`, `<article>`, `#content`), converts to Markdown with YAML front matter, counts tokens via tiktoken.
 3. **TYPO3 Origin** – Placeholder nginx in dev; real TYPO3 in production. Configured via `ORIGIN_BASE_URL`.
 
 ## Commands
@@ -27,23 +27,29 @@ docker compose up -d --build markdown-sidecar
 curl http://localhost/
 
 # Test Markdown conversion
-curl http://localhost/ -H "Accept: text/markdown"
+curl -H "Accept: text/markdown" http://localhost/
 
 # View sidecar logs
 docker compose logs -f markdown-sidecar
+
+# Run Go tests
+cd go-sidecar && go test -v ./...
 ```
 
 ## File Layout
 
 ```
-app/main.py            ← FastAPI sidecar service
+go-sidecar/
+  main.go              ← HTTP server, routes, config
+  convert.go           ← HTML→Markdown conversion pipeline
+  convert_test.go      ← Unit tests: metadata, stripping, conversion, token counting
+  handler_test.go      ← HTTP handler tests: healthz, conversion, passthrough, errors
+  go.mod / go.sum      ← Go module dependencies
 varnish/default.vcl    ← Varnish content routing
 test/html/             ← Nginx test HTML fixtures
-tests/                 ← pytest test suite
-  conftest.py          ← Shared fixtures (sample_html, minimal_html, html_no_main)
-  fixtures/page.html   ← Full TYPO3-like test page
-  test_convert.py      ← Unit tests: metadata, stripping, conversion, token counting
-  test_api.py          ← API tests: healthz, convert endpoint, error handling
+tests/fixtures/page.html ← Full TYPO3-like test page (used by Go tests)
+Dockerfile             ← Go multi-stage build (distroless)
+docker-compose.yml     ← Stack: Varnish + Sidecar + Origin
 ```
 
 ## Key Environment Variables
@@ -57,17 +63,18 @@ Configured in `docker-compose.yml` on the `markdown-sidecar` service:
 | `CONTENT_SIGNAL` | Content-Signal header value per contentsignals.org |
 | `STRIP_SELECTORS` | Additional CSS selectors to strip (comma-separated) |
 | `TOKEN_MODEL` | tiktoken encoding model (default: `cl100k_base`) |
-| `LOG_LEVEL` | Python log level |
+| `LOG_LEVEL` | Log level (DEBUG, INFO, WARN, ERROR) |
 
-## Conversion Pipeline (main.py)
+## Conversion Pipeline (convert.go)
 
-1. `extract_metadata()` – Pulls title, description, author, og:image from `<head>` for YAML front matter
-2. Content isolation – Finds `<main>` / `<article>` / `#content` / `body` as content root
-3. `strip_non_content()` – Removes elements matching `STRIP_SELECTORS` list
-4. Image removal – All `<img>` tags stripped (useless for agents)
-5. `markdownify()` conversion – ATX headings, dash bullets
-6. Blank line cleanup – Max 2 consecutive blank lines
-7. `count_tokens()` – tiktoken estimation, fallback to len/4
+1. `extractMetadata()` – Pulls title, description, author, keywords, og:image from `<head>` for YAML front matter
+2. `findContentRoot()` – Finds `<main>` / `<article>` / `#content` / `.content` / `<body>` as content root
+3. `stripNonContent()` – Removes elements matching strip selectors list
+4. `removeImages()` – All `<img>` tags stripped (useless for agents)
+5. HTML-to-Markdown conversion – ATX headings, dash bullets, pipe tables (via html-to-markdown v2)
+6. `cleanBlankLines()` – Max 2 consecutive blank lines
+7. `buildFrontMatter()` – YAML front matter from metadata
+8. `countTokens()` – tiktoken estimation, fallback to len/4
 
 ## Varnish VCL (default.vcl)
 
@@ -77,31 +84,10 @@ Configured in `docker-compose.yml` on the `markdown-sidecar` service:
 - `vcl_deliver`: Adds `X-Cache` / `X-Cache-Hits` debug headers
 - Health probe on sidecar `/healthz` endpoint (10s interval)
 
-## Python Tooling
+## Go Dependencies
 
-**Immer `uv` verwenden** – kein pip, kein pip-compile. Gilt für lokale Entwicklung und Docker.
-
-```bash
-# Dependency hinzufügen
-uv add <package>
-
-# Dev-Dependencies installieren
-uv sync --dev
-
-# Lokal ausführen
-uv run uvicorn app.main:app --reload
-
-# Sync nach pyproject.toml-Änderung
-uv sync
-
-# Alle Tests
-uv run pytest
-
-# Einzelnen Test
-uv run pytest tests/test_convert.py::TestHtmlToMarkdown::test_contains_heading -v
-
-# Nur API-Tests
-uv run pytest tests/test_api.py -v
-```
-
-Dependencies: `httpx`, `tiktoken`, `beautifulsoup4`, `markdownify`, `fastapi`, `uvicorn`
+- `github.com/JohannesKaufmann/html-to-markdown/v2` – HTML→Markdown conversion
+- `github.com/PuerkitoBio/goquery` – HTML parsing and CSS selectors
+- `github.com/pkoukk/tiktoken-go` – Token counting
+- `net/http` (stdlib) – HTTP server with Go 1.22+ routing
+- `log/slog` (stdlib) – Structured logging

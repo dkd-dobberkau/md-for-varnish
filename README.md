@@ -1,6 +1,6 @@
 # Markdown for Agents – Varnish Sidecar
 
-Ein leichtgewichtiger Sidecar-Service, der hinter Varnish HTML-Seiten in Markdown konvertiert – kompatibel mit der [Cloudflare "Markdown for Agents"](https://blog.cloudflare.com/markdown-for-agents/) Konvention.
+Ein leichtgewichtiger Go-Sidecar-Service, der hinter Varnish HTML-Seiten in Markdown konvertiert – kompatibel mit der [Cloudflare "Markdown for Agents"](https://blog.cloudflare.com/markdown-for-agents/) Konvention.
 
 AI-Agents und Crawler, die per `Accept: text/markdown` anfragen, erhalten automatisch eine tokeneffiziente Markdown-Version der Seite. Alle anderen Requests werden unverändert an den Origin (z.B. TYPO3) durchgereicht.
 
@@ -23,6 +23,12 @@ Varnish prüft den `Accept`-Header und routet:
 
 Beide Varianten werden separat gecacht (via `hash_data("markdown")`).
 
+| Service | Image | Beschreibung |
+|---------|-------|--------------|
+| Varnish | `varnish:7.6` | Content Router mit separaten Cache-Keys für HTML/Markdown |
+| Markdown Sidecar | Go auf distroless | ~9 MB Image, <50ms Startup |
+| Origin (Dev) | `nginx:alpine` | Platzhalter; in Produktion durch echtes CMS ersetzen |
+
 ## Response-Headers
 
 Konvertierte Responses enthalten diese Headers, analog zu Cloudflare:
@@ -30,19 +36,45 @@ Konvertierte Responses enthalten diese Headers, analog zu Cloudflare:
 | Header | Beispiel | Beschreibung |
 |--------|---------|-------------|
 | `Content-Type` | `text/markdown; charset=utf-8` | MIME-Type |
-| `X-Markdown-Tokens` | `417` | Geschätzte Token-Anzahl (cl100k_base) |
-| `X-Conversion-Time-Ms` | `42` | Konvertierungsdauer |
-| `Content-Signal` | `ai-train=yes, search=yes, ai-input=yes` | Nutzungserlaubnis gemäß contentsignals.org |
+| `X-Markdown-Tokens` | `129` | Geschätzte Token-Anzahl (cl100k_base) |
+| `X-Conversion-Time-Ms` | `44` | Konvertierungsdauer |
+| `Content-Signal` | `ai-train=yes, search=yes, ai-input=yes` | Nutzungserlaubnis gemäß [contentsignals.org](https://contentsignals.org/) |
 | `Vary` | `Accept` | Cache-Differenzierung |
+| `Cache-Control` | `public, max-age=300` | Caching |
 
 ## Konvertierungspipeline
 
-1. **Metadata-Extraktion** – Titel, Description, Author, OG-Image werden als YAML Front Matter vorangestellt
-2. **Content-Isolation** – Der Service sucht `<main>`, `<article>` oder `#content` als Inhaltsbereich
-3. **Chrome-Stripping** – Navigation, Footer, Cookie-Banner, Sidebar, Scripts, Styles werden entfernt
-4. **Markdown-Konvertierung** – Headings, Links, Tabellen, Blockquotes, Code-Blöcke bleiben erhalten
-5. **Cleanup** – Überflüssige Leerzeilen werden reduziert, Bilder entfernt (für Agents nutzlos)
-6. **Token-Counting** – Schätzung via tiktoken (cl100k_base, kompatibel mit GPT-4 / Claude)
+1. **Metadata-Extraktion** – Titel, Description, Author, Keywords, OG-Image werden als YAML Front Matter vorangestellt
+2. **Content-Isolation** – Der Service sucht `<main>`, `<article>`, `#content` oder `.content` als Inhaltsbereich
+3. **Chrome-Stripping** – Navigation, Footer, Cookie-Banner, Sidebar, Scripts, Styles, Formulare werden entfernt
+4. **Bilder-Entfernung** – Alle `<img>` Tags werden entfernt (für Agents nutzlos)
+5. **Markdown-Konvertierung** – Headings, Links, Listen, Tabellen, Blockquotes, Code-Blöcke bleiben erhalten
+6. **Cleanup** – Überflüssige Leerzeilen werden auf max. 2 reduziert
+7. **Token-Counting** – Schätzung via tiktoken (cl100k_base) mit len/4 Fallback
+
+## Beispiel-Output
+
+```markdown
+---
+title: "Meine Seite"
+description: "Seitenbeschreibung"
+author: "Autor"
+---
+
+# Hauptüberschrift
+
+Dies ist ein **Absatz** mit [einem Link](https://example.com).
+
+## Features
+
+- Erster Punkt
+- Zweiter Punkt
+
+| Name  | Wert |
+|-------|------|
+| Alpha | 1    |
+| Beta  | 2    |
+```
 
 ## Quickstart
 
@@ -54,7 +86,7 @@ docker compose up -d
 curl http://localhost/
 
 # Test: Markdown (für Agents)
-curl http://localhost/ -H "Accept: text/markdown"
+curl -H "Accept: text/markdown" http://localhost/
 ```
 
 ## Konfiguration
@@ -66,9 +98,9 @@ Alle Einstellungen über Umgebungsvariablen in `docker-compose.yml`:
 | `ORIGIN_BASE_URL` | `http://localhost:8080` | URL des TYPO3 Origin |
 | `ORIGIN_TIMEOUT` | `10` | Timeout für Origin-Requests in Sekunden |
 | `CONTENT_SIGNAL` | `ai-train=yes, search=yes, ai-input=yes` | Content Signals Header |
-| `STRIP_SELECTORS` | (leer) | Zusätzliche CSS-Selektoren zum Entfernen (kommasepariert) |
-| `LOG_LEVEL` | `INFO` | Log-Level |
+| `STRIP_SELECTORS` | *(leer)* | Zusätzliche CSS-Selektoren zum Entfernen (kommasepariert) |
 | `TOKEN_MODEL` | `cl100k_base` | tiktoken Encoding-Modell |
+| `LOG_LEVEL` | `INFO` | Log-Level (DEBUG, INFO, WARN, ERROR) |
 
 ### Eigene Elemente ausschließen
 
@@ -79,34 +111,42 @@ environment:
   STRIP_SELECTORS: ".ad-banner,.tracking-pixel,#my-widget"
 ```
 
-## Lokaler Test ohne Docker
+## Entwicklung
 
 ```bash
-pip install -r requirements.txt
-python test/test_convert.py
+# Go-Tests ausführen
+cd go-sidecar && go test -v ./...
+
+# Sidecar nach Änderungen neu bauen
+docker compose up -d --build markdown-sidecar
+
+# Sidecar-Logs anzeigen
+docker compose logs -f markdown-sidecar
 ```
 
 ## Projektstruktur
 
 ```
-markdown-sidecar/
-├── app/
-│   └── main.py              # FastAPI Sidecar-Service
+md-for-varnish/
+├── go-sidecar/
+│   ├── main.go              # HTTP-Server, Routes, Config
+│   ├── convert.go           # HTML→Markdown Pipeline
+│   ├── convert_test.go      # Unit-Tests für Konvertierung
+│   ├── handler_test.go      # HTTP-Handler-Tests
+│   ├── go.mod
+│   └── go.sum
 ├── varnish/
 │   └── default.vcl          # Varnish Content-Routing
 ├── test/
-│   ├── html/
-│   │   └── index.html       # Test-HTML
-│   └── test_convert.py      # Lokaler Konvertierungstest
-├── docker-compose.yml        # Stack: Varnish + Sidecar + Origin
-├── Dockerfile                # Sidecar Container
-├── requirements.txt
+│   └── html/                # Test-HTML für nginx Placeholder
+├── tests/
+│   └── fixtures/page.html   # Test-Fixture für Go-Tests
+├── docker-compose.yml       # Stack: Varnish + Sidecar + Origin
+├── Dockerfile               # Go Multi-Stage Build (distroless)
 └── README.md
 ```
 
 ## Produktionsbetrieb
-
-Für den Einsatz in Produktion:
 
 - `ORIGIN_BASE_URL` auf die tatsächliche TYPO3-Instanz setzen (internes Netzwerk)
 - Den `typo3`-Service in `docker-compose.yml` durch den echten Origin ersetzen oder entfernen
@@ -115,9 +155,6 @@ Für den Einsatz in Produktion:
 - Content Signals gemäß eigener Policy konfigurieren
 - Monitoring auf `X-Conversion-Time-Ms` für Performance-Überwachung
 
-## Nächste Schritte
+## Lizenz
 
-- TYPO3-Extension, die Content Signals direkt als Meta-Tag ausgibt
-- Konfigurierbare Bildbehandlung (Base64-Inline vs. URL-Referenz vs. Entfernung)
-- robots.txt / ai.txt Integration für granulare Agent-Steuerung
-- Metriken-Endpoint für Prometheus/Grafana
+[MIT](LICENSE)
