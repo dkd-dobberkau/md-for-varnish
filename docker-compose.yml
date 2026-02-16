@@ -1,0 +1,42 @@
+services:
+  # ── Varnish reverse proxy ─────────────────────────────────────
+  varnish:
+    image: varnish:7.6
+    ports:
+      - "80:80"
+    volumes:
+      - ./varnish/default.vcl:/etc/varnish/default.vcl:ro
+    environment:
+      VARNISH_SIZE: 256m
+    depends_on:
+      - markdown-sidecar
+    tmpfs:
+      - /var/lib/varnish/varnishd:exec
+
+  # ── Markdown Sidecar ──────────────────────────────────────────
+  markdown-sidecar:
+    build: .
+    environment:
+      ORIGIN_BASE_URL: "http://typo3:80"
+      ORIGIN_TIMEOUT: "10"
+      CONTENT_SIGNAL: "ai-train=yes, search=yes, ai-input=yes"
+      LOG_LEVEL: "INFO"
+      # STRIP_SELECTORS: ".my-ads,.tracking-pixel"
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ── TYPO3 origin (placeholder – replace with your actual origin) ──
+  # This is a stand-in. In production, point ORIGIN_BASE_URL to your
+  # actual TYPO3 instance.
+  typo3:
+    image: nginx:alpine
+    volumes:
+      - ./test/html:/usr/share/nginx/html:ro
+    expose:
+      - "8080"
+    command: ["nginx", "-g", "daemon off;", "-c", "/etc/nginx/nginx.conf"]

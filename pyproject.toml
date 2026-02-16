@@ -1,0 +1,24 @@
+[project]
+name = "markdown-sidecar"
+version = "0.1.0"
+description = "Varnish sidecar that converts HTML to Markdown for AI agents"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.12",
+    "fastapi>=0.115",
+    "httpx>=0.28",
+    "markdownify>=0.14",
+    "tiktoken>=0.8",
+    "uvicorn>=0.34",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
